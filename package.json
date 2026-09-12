@@ -1,0 +1,14 @@
+{
+  "name": "reddit-monitor",
+  "version": "1.0.0",
+  "description": "Read-only monitor that lists Reddit posts where small business owners ask for software recommendations.",
+  "type": "module",
+  "main": "monitor.mjs",
+  "scripts": {
+    "start": "node --env-file=.env monitor.mjs",
+    "once": "node --env-file=.env monitor.mjs --once"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "private": true
+}
