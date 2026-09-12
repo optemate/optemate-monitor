@@ -10,7 +10,7 @@ import path from "path";
 const CLIENT_ID = process.env.REDDIT_CLIENT_ID;
 const CLIENT_SECRET = process.env.REDDIT_CLIENT_SECRET;
 const USER_AGENT = process.env.REDDIT_USER_AGENT || "optemate-monitor/1.0 (read-only; contact optemate@gmail.com)";
-const SUBREDDITS = (process.env.SUBREDDITS || "smallbusiness,Entrepreneur,sweatystartup,Plumbing,HVAC,Construction,Truckers,Towing,restaurantowners").split(",").map((s) => s.trim()).filter(Boolean);
+const SUBREDDITS = (process.env.SUBREDDITS || "smallbusiness,Entrepreneur,EntrepreneurRideAlong,startups,sweatystartup,Contractor,Bookkeeping,Hairstylist,Photography").split(",").map((s) => s.trim()).filter(Boolean);
 const OUT_FILE = process.env.OUT_FILE || path.join(process.cwd(), "matches.csv");
 const SEEN_FILE = process.env.SEEN_FILE || path.join(process.cwd(), "seen.json");
 const INTERVAL_MIN = Number(process.env.INTERVAL_MIN || 60);

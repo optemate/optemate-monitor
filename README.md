@@ -41,7 +41,7 @@ All optional, via `.env`:
 
 | variable | default |
 |---|---|
-| `SUBREDDITS` | `smallbusiness,Entrepreneur,sweatystartup,Plumbing,HVAC,Construction,Truckers,Towing,restaurantowners` |
+| `SUBREDDITS` | `smallbusiness,Entrepreneur,EntrepreneurRideAlong,startups,sweatystartup,Contractor,Bookkeeping,Hairstylist,Photography` |
 | `INTERVAL_MIN` | `60` |
 | `POSTS_PER_SUB` | `50` |
 | `OUT_FILE` | `./matches.csv` |
