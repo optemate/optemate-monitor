@@ -1,14 +1,22 @@
 {
   "name": "reddit-monitor",
   "version": "1.0.0",
-  "description": "Read-only monitor that lists Reddit posts where small business owners ask for software recommendations.",
+  "description": "Read-only Reddit monitor: reads subreddit feeds, has Claude score posts where business owners ask about software, drafts a peer reply, and queues the good ones on the Optemate pipeline board for a person to post by hand.",
   "type": "module",
   "main": "monitor.mjs",
   "scripts": {
     "start": "node --env-file=.env monitor.mjs",
-    "once": "node --env-file=.env monitor.mjs --once"
+    "once": "node --env-file=.env monitor.mjs --once",
+    "scan": "node --env-file=.env monitor.mjs --once --no-ai",
+    "dry": "node --env-file=.env monitor.mjs --once --no-board"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "zod": "^4.6.5"
+  }
 }
