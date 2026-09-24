@@ -10,6 +10,12 @@ Read-only monitor that finds Reddit posts where a business owner is asking what 
 4. Posts scoring 4 or 5 become a lead on the Optemate pipeline board, Nurture pipeline, "To Nurture" stage. The Full summary holds the post, the score, what they need and the draft reply. Everything scored is also appended to `matches.csv`.
 5. A person reads the lead, edits the draft, and posts it from their own Reddit account. Nothing is ever written to Reddit by this script.
 
+## F5Bot alerts (optional second source)
+
+F5Bot (f5bot.com, free) emails an alert whenever a chosen phrase appears anywhere on Reddit, including comments the feed list never sees. F5Bot has no API, so the alerts are read inside the optemate Google account by a small Apps Script (`f5bot-apps-script.js` in this repo) that appends each Reddit link to a Google Sheet every 15 minutes. The sheet is published as a read-only CSV link, and the monitor polls that link each pass: it fetches the post through its own feed, scores it like a feed hit, and marks the source as the F5Bot keyword. No email password is stored anywhere.
+
+Setup: paste `f5bot-apps-script.js` into script.google.com in the optemate account, run `setup` once and approve it, open the sheet it names, File > Share > Publish to web > Sheet1 > CSV, and put that link in `.env` as `F5BOT_CSV`.
+
 ## Daily routine
 
 Ten minutes: open the Nurture column, read each new card, open the post, edit the draft so it sounds like you, post it. Move the card to Drip Active if they DM back, or Dead after a week of silence. Never post a draft unread.

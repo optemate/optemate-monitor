@@ -23,6 +23,7 @@ const MCP_KEY = process.env.MCP_API_KEY;
 // "api" uses the Anthropic SDK with ANTHROPIC_API_KEY (pay per token).
 const SCORER = process.env.SCORER || "claude-code";
 const MODEL = process.env.CLAUDE_MODEL || (SCORER === "api" ? "claude-opus-5" : "sonnet");
+const F5BOT_CSV = process.env.F5BOT_CSV || "";                 // published Google Sheet (CSV) filled by the Apps Script that reads F5Bot alert emails
 const once = process.argv.includes("--once");
 const noAi = process.argv.includes("--no-ai");                  // list matches only, no scoring, no board
 const noBoard = process.argv.includes("--no-board");            // score and draft, but only write the CSV
@@ -69,6 +70,51 @@ function parseAtom(xml, sub) {
     if (id && title) out.push({ id, sub, title, link, author, updated, body });
   }
   return out;
+}
+
+// ---- F5Bot alerts (via the published sheet) ------------------------------------------------------
+// The sheet rows are: found_at, keyword, url, excerpt, message_id. Each url is a Reddit post or comment.
+function parseCsv(text) {
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+    else if (ch !== "\r") cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  const [head, ...body] = rows;
+  return body.filter((r) => r.length >= 3 && r.some(Boolean)).map((r) => Object.fromEntries(head.map((h, i) => [h.trim(), r[i] ?? ""])));
+}
+
+async function fetchAlerts() {
+  const r = await fetch(F5BOT_CSV, { headers: { "User-Agent": USER_AGENT }, redirect: "follow", signal: AbortSignal.timeout(20000) });
+  if (!r.ok) { console.error(`F5Bot sheet: HTTP ${r.status}`); return []; }
+  return parseCsv(await r.text());
+}
+
+// Turn a post or comment link into the same shape the subreddit feed gives us, by reading the post's own feed.
+// The first entry is the post; later entries are comments. If the link points at a comment, its text is appended.
+async function fetchPost(url) {
+  const m = url.match(/^https?:\/\/(?:www\.|old\.|new\.)?reddit\.com\/r\/([^/]+)\/comments\/([a-z0-9]+)(?:\/([^/?#]*))?(?:\/(?:comment\/)?([a-z0-9]+))?/i);
+  if (!m) return null;
+  const [, sub, postId, slug = "", commentId] = m;
+  const feed = `https://www.reddit.com/r/${sub}/comments/${postId}/${slug}/.rss`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(feed, { headers: { "User-Agent": USER_AGENT, Accept: "application/atom+xml, application/xml" }, signal: AbortSignal.timeout(20000) });
+      if (r.status === 429) { await sleep(30000 * (attempt + 1)); continue; }
+      if (!r.ok) { console.error(`post feed ${postId}: HTTP ${r.status}`); return null; }
+      const entries = parseAtom(await r.text(), sub);
+      const post = entries.find((e) => e.id.startsWith("t3_")) ?? entries[0];
+      if (!post) return null;
+      const comment = commentId && commentId !== postId ? entries.find((e) => e.link.includes(`/${commentId}/`) || e.id === `t1_${commentId}`) : null;
+      return { ...post, link: url, isComment: !!comment, body: comment ? `${post.body}\n\nThe comment F5Bot matched, by u/${comment.author}:\n${comment.body}` : post.body };
+    } catch { await sleep(5000); }
+  }
+  return null;
 }
 
 function prefilter(p) {
@@ -230,7 +276,7 @@ async function toBoard(p, v) {
     `- Post the reply from the warmed account. If they DM back, move this to Drip Active and fill in the real business details. If nobody bites in 7 days, mark Dead.`,
     ``,
     `SOURCE`,
-    `- Where we found them: the public new-posts feed of r/${p.sub}, read by the Reddit monitor on ${today}.`,
+    `- Where we found them: ${p.via ? `an F5Bot keyword alert ("${p.via}") that pointed at this Reddit thread, picked up by the monitor on ${today}` : `the public new-posts feed of r/${p.sub}, read by the Reddit monitor on ${today}`}.`,
     `- How we confirmed the problem: their own words in the post; nothing else verified yet.`,
   ].join("\n");
   const deal = await mcp("create_deal", {
@@ -243,41 +289,66 @@ async function toBoard(p, v) {
 }
 
 // ---- one pass -----------------------------------------------------------------------------------
+const counts = { checked: 0, matched: 0, scored: 0, boarded: 0 };
+
+// Score one post (already past the prefilter), queue it if good, log it. `label` is what shows in the CSV's subreddit column.
+async function handle(p, label) {
+  if (noAi) { console.log(`match  ${label}  ${p.title}\n       ${p.link}`); fs.appendFileSync(OUT_FILE, [new Date().toISOString(), label, p.author, "", "", "", "", p.title, p.link, ""].map(csvCell).join(",") + "\n"); return; }
+  let v;
+  try { v = await score(p); counts.scored++; }
+  catch (e) {
+    if (/rate|429|usage limit/i.test(e.message)) { await sleep(60000); try { v = await score(p); } catch (e2) { console.error("score failed twice:", e2.message); return; } }
+    else { console.error("score failed:", e.message); return; }
+  }
+  let dealId = "";
+  if (v.fit >= MIN_SCORE && !noBoard && MCP_KEY) {
+    try { dealId = await toBoard(p, v); counts.boarded++; } catch (e) { console.error("board failed:", e.message); }
+  }
+  fs.appendFileSync(OUT_FILE, [new Date().toISOString(), label, p.author, v.fit, v.stage, v.niche, v.need, p.title, p.link, dealId].map(csvCell).join(",") + "\n");
+  if (v.fit >= 3 && v.reply) fs.appendFileSync(DRAFTS_FILE, `## ${v.fit}/5  ${label}  ${p.title}\n${p.link}\n${v.niche} | ${v.stage} | ${v.need}\n\n${v.reply}\n\n---\n\n`);
+  console.log(`${v.fit}/5  ${label}  ${p.title}${dealId ? "  -> on board" : ""}\n       ${p.link}`);
+}
+
 async function runOnce() {
   const seen = loadSeen();
   if (!fs.existsSync(OUT_FILE)) fs.writeFileSync(OUT_FILE, "found_at,subreddit,author,fit,stage,niche,need,title,link,on_board\n");
-  let checked = 0, matched = 0, scored = 0, boarded = 0;
+  Object.keys(counts).forEach((k) => (counts[k] = 0));
   for (const sub of SUBREDDITS) {
     const posts = await fetchNew(sub);
     for (const p of posts) {
-      checked++;
+      counts.checked++;
       if (seen.has(p.id)) continue;
       seen.add(p.id);
       if (!prefilter(p)) continue;
-      matched++;
-      if (noAi) { console.log(`match  r/${sub}  ${p.title}\n       ${p.link}`); fs.appendFileSync(OUT_FILE, [new Date().toISOString(), sub, p.author, "", "", "", "", p.title, p.link, ""].map(csvCell).join(",") + "\n"); continue; }
-      let v;
-      try { v = await score(p); scored++; }
-      catch (e) {
-        if (/rate|429|usage limit/i.test(e.message)) { await sleep(60000); try { v = await score(p); } catch (e2) { console.error("score failed twice:", e2.message); continue; } }
-        else { console.error("score failed:", e.message); continue; }
-      }
-      let dealId = "";
-      if (v.fit >= MIN_SCORE && !noBoard && MCP_KEY) {
-        try { dealId = await toBoard(p, v); boarded++; } catch (e) { console.error("board failed:", e.message); }
-      }
-      fs.appendFileSync(OUT_FILE, [new Date().toISOString(), sub, p.author, v.fit, v.stage, v.niche, v.need, p.title, p.link, dealId].map(csvCell).join(",") + "\n");
-      if (v.fit >= 3 && v.reply) fs.appendFileSync(DRAFTS_FILE, `## ${v.fit}/5  r/${sub}  ${p.title}\n${p.link}\n${v.niche} | ${v.stage} | ${v.need}\n\n${v.reply}\n\n---\n\n`);
-      console.log(`${v.fit}/5  r/${sub}  ${p.title}${dealId ? "  -> on board" : ""}\n       ${p.link}`);
+      counts.matched++;
+      await handle(p, `r/${sub}`);
     }
     saveSeen(seen);
     await sleep(2000);
   }
-  console.log(`${new Date().toISOString()}  ${checked} posts across ${SUBREDDITS.length} subreddits, ${matched} matched, ${scored} scored, ${boarded} put on the board -> ${OUT_FILE}`);
+  // F5Bot alerts: every row is already a keyword hit, so no prefilter; the link may be a comment deep in an old thread.
+  let alerts = 0;
+  if (F5BOT_CSV) {
+    for (const row of await fetchAlerts()) {
+      const url = (row.url || "").trim();
+      if (!url || seen.has("f5:" + url)) continue;
+      seen.add("f5:" + url);
+      const p = await fetchPost(url);
+      await sleep(3000);
+      if (!p) continue;
+      if (seen.has(p.id) && !p.isComment) continue;   // the post itself was already scored from the subreddit feed
+      seen.add(p.id);
+      alerts++;
+      p.via = row.keyword || "keyword alert";
+      await handle(p, `f5bot:${row.keyword || "alert"}`);
+    }
+    saveSeen(seen);
+  }
+  console.log(`${new Date().toISOString()}  ${counts.checked} posts across ${SUBREDDITS.length} subreddits, ${counts.matched} matched, ${alerts} F5Bot alerts, ${counts.scored} scored, ${counts.boarded} put on the board -> ${OUT_FILE}`);
 }
 
 // ---- main ---------------------------------------------------------------------------------------
-export { fetchNew, prefilter, score, mcp, toBoard, runOnce };
+export { fetchNew, prefilter, score, mcp, toBoard, runOnce, fetchAlerts, fetchPost, parseCsv };
 
 const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isEntry) {
