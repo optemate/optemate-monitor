@@ -7,8 +7,8 @@ Read-only monitor that finds Reddit posts where a business owner is asking what 
 1. Once an hour it reads the public "new posts" feed (RSS) of each subreddit in the list. No Reddit API key, no login.
 2. A keyword filter keeps posts that are about software, systems or process problems and read as a question or a complaint. Posts that are selling, hiring or promoting are dropped.
 3. Each kept post goes to Claude through the Claude Code command in headless mode, so it runs on the Claude subscription of whoever is logged in on the machine (no API key, no per-token bill; `SCORER=api` switches to the paid API if ever needed). Claude scores the fit 1 to 5, says what kind of business and what they need, and drafts a peer-style reply in the Optemate voice (plain words, diagnose first, two or three honest tool options with a catch each, then the "it can be a small custom layer on top of what you have" reframe, one soft DM line, never a link, never the company name).
-4. Posts scoring 4 or 5 become a lead on the Optemate pipeline board, Nurture pipeline, "To Nurture" stage. The Full summary holds the post, the score, what they need and the draft reply. Everything scored is also appended to `matches.csv`.
-5. A person reads the lead, edits the draft, and posts it from their own Reddit account. Nothing is ever written to Reddit by this script.
+4. Posts scoring 4 or 5 become a card on the board's **Reddit leads** holding board ("To Review" column), which is separate from the Sales and Nurture pipelines. The Full summary holds the post, the score, what they need and the draft reply. Everything scored is also appended to `matches.csv`.
+5. A person reads the card, edits the draft, posts it from their own Reddit account, and drags the card to Replied. If the poster turns into a real conversation, "Move to pipeline" on the card approves it into Sales; otherwise Skipped. Nothing reaches the real pipeline without that click, and nothing is ever written to Reddit by this script.
 
 ## F5Bot alerts (optional second source)
 
@@ -18,7 +18,7 @@ Setup: paste `f5bot-apps-script.js` into script.google.com in the optemate accou
 
 ## Daily routine
 
-Ten minutes: open the Nurture column, read each new card, open the post, edit the draft so it sounds like you, post it. Move the card to Drip Active if they DM back, or Dead after a week of silence. Never post a draft unread.
+Ten minutes: open the Reddit board, read each card in To Review, open the post, edit the draft so it sounds like you, post it, drag the card to Replied. When someone DMs back and it is a real business, fill in their details and click "Move to pipeline". Skipped for the rest. Never post a draft unread.
 
 ## Setup
 

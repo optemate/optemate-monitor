@@ -273,14 +273,14 @@ async function toBoard(p, v) {
     v.reply,
     ``,
     `NEXT STEP`,
-    `- Post the reply from the warmed account. If they DM back, move this to Drip Active and fill in the real business details. If nobody bites in 7 days, mark Dead.`,
+    `- This card is on the Reddit holding board, not in the pipeline. Post the reply from the warmed account and drag the card to Replied. If they DM back and it is a real business, fill in their details and use "Move to pipeline" to approve it into Sales. If it goes nowhere, drag it to Skipped.`,
     ``,
     `SOURCE`,
     `- Where we found them: ${p.via ? `an F5Bot keyword alert ("${p.via}") that pointed at this Reddit thread, picked up by the monitor on ${today}` : `the public new-posts feed of r/${p.sub}, read by the Reddit monitor on ${today}`}.`,
     `- How we confirmed the problem: their own words in the post; nothing else verified yet.`,
   ].join("\n");
   const deal = await mcp("create_deal", {
-    contact_id: cid, service: serviceFor(v), pipeline: "nurture", stage: "To Nurture",
+    contact_id: cid, service: serviceFor(v), pipeline: "reddit", stage: "To Review",
     title: `Reddit: ${v.niche || "owner"} asking about ${v.need.slice(0, 70)}`,
     scope: `u/${p.author} in r/${p.sub} (fit ${v.fit}/5): ${v.need}\nPost: ${p.link}\nReply drafted in the full summary; post it by hand.`,
     summary,
