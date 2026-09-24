@@ -7,20 +7,22 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import Anthropic from "@anthropic-ai/sdk";
-import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { spawn } from "child_process";
 
 // ---- config (env, with defaults) ---------------------------------------------------------
 const SUBREDDITS = (process.env.SUBREDDITS || "smallbusiness,Entrepreneur,sweatystartup,Contractor,Bookkeeping,Hairstylist,Photography,restaurateur,msp,HVAC,Plumbing,electricians,landscaping,Autobody,cleaningbusiness,lawncare,smallbusinessuk").split(",").map((s) => s.trim()).filter(Boolean);
 const USER_AGENT = process.env.REDDIT_USER_AGENT || "optemate-monitor/2.0 (read-only feed reader; contact optemate@gmail.com)";
 const OUT_FILE = process.env.OUT_FILE || path.join(process.cwd(), "matches.csv");
 const SEEN_FILE = process.env.SEEN_FILE || path.join(process.cwd(), "seen.json");
+const DRAFTS_FILE = process.env.DRAFTS_FILE || path.join(process.cwd(), "drafts.md");   // every drafted reply, newest last, for review without the board
 const INTERVAL_MIN = Number(process.env.INTERVAL_MIN || 60);
 const MIN_SCORE = Number(process.env.MIN_SCORE || 4);          // 1-5; this and above go on the board
 const MCP_URL = process.env.MCP_URL || "http://localhost:3000/api/mcp";
 const MCP_KEY = process.env.MCP_API_KEY;
-const MODEL = process.env.CLAUDE_MODEL || "claude-opus-5";
+// SCORER: "claude-code" runs the Claude Code CLI in headless mode on the machine's subscription login (default);
+// "api" uses the Anthropic SDK with ANTHROPIC_API_KEY (pay per token).
+const SCORER = process.env.SCORER || "claude-code";
+const MODEL = process.env.CLAUDE_MODEL || (SCORER === "api" ? "claude-opus-5" : "sonnet");
 const once = process.argv.includes("--once");
 const noAi = process.argv.includes("--no-ai");                  // list matches only, no scoring, no board
 const noBoard = process.argv.includes("--no-board");            // score and draft, but only write the CSV
@@ -76,15 +78,20 @@ function prefilter(p) {
 }
 
 // ---- scoring and draft reply -------------------------------------------------------------------
-const Verdict = z.object({
-  fit: z.number().int().min(1).max(5).describe("1 = not a lead, 5 = a business owner clearly asking for software or describing a process problem we could solve"),
-  is_business_owner: z.boolean(),
-  niche: z.string().describe("the kind of business, in plain words, e.g. 'two-truck HVAC company'"),
-  need: z.string().describe("one sentence: what they actually need, in plain words"),
-  stage: z.string().describe("one of: active pain, acute crisis, pre-purchase, deep researcher, vague pain, beginner, cost-conscious, multi-need, custom-curious, brief"),
-  why: z.string().describe("one sentence on why this score"),
-  reply: z.string().describe("the drafted Reddit comment, or an empty string if fit is below 3"),
-});
+const VERDICT_SCHEMA = {
+  type: "object",
+  properties: {
+    fit: { type: "integer", minimum: 1, maximum: 5, description: "1 = not a lead, 5 = a business owner clearly asking for software or describing a process problem we could solve" },
+    is_business_owner: { type: "boolean" },
+    niche: { type: "string", description: "the kind of business, in plain words, e.g. 'two-truck HVAC company'" },
+    need: { type: "string", description: "one sentence: what they actually need, in plain words" },
+    stage: { type: "string", description: "one of: active pain, acute crisis, pre-purchase, deep researcher, vague pain, beginner, cost-conscious, multi-need, custom-curious, brief" },
+    why: { type: "string", description: "one sentence on why this score" },
+    reply: { type: "string", description: "the drafted Reddit comment, or an empty string if fit is below 3" },
+  },
+  required: ["fit", "is_business_owner", "niche", "need", "stage", "why", "reply"],
+  additionalProperties: false,
+};
 
 const SYSTEM = `You screen Reddit posts for Optemate, a small US company that builds custom software, automations, integrations and websites for owner-run businesses (trades, salons, restaurants, distributors, small manufacturers, professional services). A person will read your output and decide whether to reply by hand; nothing you write is posted automatically.
 
@@ -104,23 +111,72 @@ If fit is 3 or higher, draft the reply. Voice rules for the reply, all of them m
 - End with one soft line: "If you want to talk through what that would look like for your setup, happy to in DMs." Never name Optemate, never link anything, never mention prices for custom work.
 - 150 to 350 words. Shorter for short posts.`;
 
-let client = null;
-function ai() {
-  if (!client) client = new Anthropic();   // ANTHROPIC_API_KEY from the environment
-  return client;
+const postText = (p) => `Subreddit: r/${p.sub}\nAuthor: u/${p.author}\nTitle: ${p.title}\n\nPost:\n${p.body || "(no body text)"}`;
+const DECLINED = { fit: 1, is_business_owner: false, niche: "", need: "", stage: "", why: "declined", reply: "" };
+
+// Headless Claude Code: uses whoever is logged in to `claude` on this machine (the subscription), no API key.
+// Spawned as a real executable (no shell) so the long system prompt and the JSON schema pass through untouched.
+function claudeBin() {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  if (process.platform === "win32") {
+    const home = process.env.USERPROFILE || "";
+    const candidates = [   // the npm install is the one `claude` on PATH runs; the .local copy can be an older version
+      path.join(process.env.APPDATA || "", "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+      path.join(home, ".local", "bin", "claude.exe"),
+    ];
+    for (const c of candidates) if (fs.existsSync(c)) return c;
+  }
+  return "claude";
 }
 
-async function score(p) {
-  const res = await ai().messages.parse({
+function scoreWithClaudeCode(p) {
+  return new Promise((resolve, reject) => {
+    const args = ["-p", "--output-format", "json", "--model", MODEL, "--tools", "", "--exclude-dynamic-system-prompt-sections",
+      "--system-prompt", SYSTEM, "--json-schema", JSON.stringify(VERDICT_SCHEMA)];
+    const env = { ...process.env, CLAUDECODE: undefined, CLAUDE_CODE_ENTRYPOINT: undefined };   // allow launching from inside a Claude Code session
+    const child = spawn(claudeBin(), args, { shell: false, windowsHide: true, env });
+    let out = "", err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      let j;
+      try { j = JSON.parse(out); } catch { return reject(new Error(`claude returned non-JSON (exit ${code}): ${(err || out).slice(0, 200)}`)); }
+      if (j.is_error || /not logged in/i.test(j.result || "")) return reject(new Error(`claude error: ${String(j.result).slice(0, 200)}`));
+      if (!j.structured_output) return reject(new Error(`no structured output: ${String(j.result).slice(0, 200)}`));
+      resolve(j.structured_output);
+    });
+    child.stdin.end(postText(p));
+  });
+}
+
+// Anthropic SDK, pay per token. Only loaded when SCORER=api.
+let client = null;
+async function scoreWithApi(p) {
+  if (!client) { const { default: Anthropic } = await import("@anthropic-ai/sdk"); client = new Anthropic(); }
+  const res = await client.messages.parse({
     model: MODEL,
     max_tokens: 4000,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: `Subreddit: r/${p.sub}\nAuthor: u/${p.author}\nTitle: ${p.title}\n\nPost:\n${p.body || "(no body text)"}` }],
-    output_config: { effort: "medium", format: zodOutputFormat(Verdict) },
+    messages: [{ role: "user", content: postText(p) }],
+    output_config: { effort: "medium", format: { type: "json_schema", schema: VERDICT_SCHEMA } },
   });
-  if (res.stop_reason === "refusal") return { fit: 1, is_business_owner: false, niche: "", need: "", stage: "", why: "declined", reply: "" };
-  return res.parsed_output;
+  if (res.stop_reason === "refusal") return DECLINED;
+  return res.parsed_output ?? JSON.parse(res.content.find((b) => b.type === "text")?.text ?? "{}");
 }
+
+// The voice rules say no em dashes and no bullet structure; the model still slips some in, so clean them here.
+function tidyReply(text) {
+  return String(text || "")
+    .replace(/\s*[—–]\s*/g, ", ")            // em and en dashes become commas
+    .replace(/,\s*,/g, ",")
+    .replace(/^\s*[-*•]\s+/gm, "")               // leading list markers
+    .replace(/\*\*/g, "")                              // bold
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+const rawScore = SCORER === "api" ? scoreWithApi : scoreWithClaudeCode;
+async function score(p) { const v = await rawScore(p); v.reply = tidyReply(v.reply); return v; }
 
 // ---- pipeline board -----------------------------------------------------------------------------
 async function mcp(name, args) {
@@ -203,7 +259,7 @@ async function runOnce() {
       let v;
       try { v = await score(p); scored++; }
       catch (e) {
-        if (e instanceof Anthropic.RateLimitError) { await sleep(30000); try { v = await score(p); } catch (e2) { console.error("score failed twice:", e2.message); continue; } }
+        if (/rate|429|usage limit/i.test(e.message)) { await sleep(60000); try { v = await score(p); } catch (e2) { console.error("score failed twice:", e2.message); continue; } }
         else { console.error("score failed:", e.message); continue; }
       }
       let dealId = "";
@@ -211,6 +267,7 @@ async function runOnce() {
         try { dealId = await toBoard(p, v); boarded++; } catch (e) { console.error("board failed:", e.message); }
       }
       fs.appendFileSync(OUT_FILE, [new Date().toISOString(), sub, p.author, v.fit, v.stage, v.niche, v.need, p.title, p.link, dealId].map(csvCell).join(",") + "\n");
+      if (v.fit >= 3 && v.reply) fs.appendFileSync(DRAFTS_FILE, `## ${v.fit}/5  r/${sub}  ${p.title}\n${p.link}\n${v.niche} | ${v.stage} | ${v.need}\n\n${v.reply}\n\n---\n\n`);
       console.log(`${v.fit}/5  r/${sub}  ${p.title}${dealId ? "  -> on board" : ""}\n       ${p.link}`);
     }
     saveSeen(seen);

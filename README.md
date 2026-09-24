@@ -6,7 +6,7 @@ Read-only monitor that finds Reddit posts where a business owner is asking what 
 
 1. Once an hour it reads the public "new posts" feed (RSS) of each subreddit in the list. No Reddit API key, no login.
 2. A keyword filter keeps posts that are about software, systems or process problems and read as a question or a complaint. Posts that are selling, hiring or promoting are dropped.
-3. Each kept post goes to Claude, which scores the fit 1 to 5, says what kind of business and what they need, and drafts a peer-style reply in the Optemate voice (plain words, diagnose first, two or three honest tool options with a catch each, then the "it can be a small custom layer on top of what you have" reframe, one soft DM line, never a link, never the company name).
+3. Each kept post goes to Claude through the Claude Code command in headless mode, so it runs on the Claude subscription of whoever is logged in on the machine (no API key, no per-token bill; `SCORER=api` switches to the paid API if ever needed). Claude scores the fit 1 to 5, says what kind of business and what they need, and drafts a peer-style reply in the Optemate voice (plain words, diagnose first, two or three honest tool options with a catch each, then the "it can be a small custom layer on top of what you have" reframe, one soft DM line, never a link, never the company name).
 4. Posts scoring 4 or 5 become a lead on the Optemate pipeline board, Nurture pipeline, "To Nurture" stage. The Full summary holds the post, the score, what they need and the draft reply. Everything scored is also appended to `matches.csv`.
 5. A person reads the lead, edits the draft, and posts it from their own Reddit account. Nothing is ever written to Reddit by this script.
 
@@ -17,7 +17,8 @@ Ten minutes: open the Nurture column, read each new card, open the post, edit th
 ## Setup
 
 ```
-cp .env.example .env     # fill in ANTHROPIC_API_KEY and MCP_API_KEY
+claude                   # once: make sure Claude Code is installed and logged in on this machine
+cp .env.example .env     # fill in MCP_API_KEY
 npm install
 npm run scan             # feed + keyword filter only, no AI, no board: sanity check
 npm run dry              # scores and drafts, writes matches.csv, does not touch the board
@@ -41,12 +42,12 @@ All via `.env`:
 
 | variable | default |
 |---|---|
-| `ANTHROPIC_API_KEY` | required for scoring |
+| `SCORER` | `claude-code` (subscription, via the logged-in Claude Code command) or `api` (needs `ANTHROPIC_API_KEY`) |
 | `MCP_API_KEY`, `MCP_URL` | the pipeline board; omit to skip the board |
 | `SUBREDDITS` | 17 subreddits: small business, trades, salons, restaurants, bookkeeping, photography |
 | `MIN_SCORE` | `4` |
 | `INTERVAL_MIN` | `60` |
-| `CLAUDE_MODEL` | `claude-opus-5` |
+| `CLAUDE_MODEL` | `sonnet` for the subscription scorer, `claude-opus-5` for the API |
 | `OUT_FILE` | `./matches.csv` |
 
 ## Volume and manners
