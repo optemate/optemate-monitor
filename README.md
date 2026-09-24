@@ -36,10 +36,10 @@ The pipeline dev server has to be running for the board hand-off (`MCP_URL`, def
 
 ## Running it on a schedule (Windows)
 
-One hourly Task Scheduler job, run whether or not you are logged in:
+One hourly Task Scheduler job. It goes through `run-hidden.vbs` so no command window pops up while it runs (output goes to `monitor.log`):
 
 ```
-schtasks /Create /SC HOURLY /TN "Optemate Reddit Monitor" /TR "cmd /c cd /d \"C:\Users\scott\OneDrive\Desktop\Projects\More Work\Optemate\reddit-monitor\" && npm run once >> monitor.log 2>&1" /F
+schtasks /Create /SC HOURLY /TN "Optemate Reddit Monitor" /TR "wscript.exe \"C:\Users\scott\OneDrive\Desktop\Projects\More Work\Optemate\reddit-monitor\run-hidden.vbs\"" /F
 ```
 
 ## Config
